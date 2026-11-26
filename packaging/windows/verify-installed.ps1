@@ -72,7 +72,7 @@ function Show-MsiLog([string]$Log) {
         $lines[$start..$index] | ForEach-Object { Write-Host $_ }
         Write-Host '----'
     }
-    $lines | Where-Object { $_ -match 'RemoveNsisInstall|NSISINSTALL|AppSearch|Error 17|CustomAction .* returned|Product: OSMClient|Doing action: InstallFiles' } |
+    $lines | Where-Object { $_ -match 'CloseInstalledClients|RemoveNsisInstall|NSISINSTALL|MSIINSTALL|AppSearch|Error 17|CustomAction .* returned|Product: OSMClient|Doing action: InstallFiles' } |
         Select-Object -First 60 | ForEach-Object { Write-Host $_ }
     Write-Host '==== end of MSI log excerpt'
 }

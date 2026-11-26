@@ -15,6 +15,10 @@
       <RegistrySearch Id="FindNsisInstall" Root="HKLM" Win64="no" Type="raw"
                       Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\OSMClient" Name="InstallLocation" />
     </Property>
+    <Property Id="MSIINSTALL" Secure="yes">
+      <RegistrySearch Id="FindMsiInstall" Root="HKLM" Win64="no" Type="raw"
+                      Key="Software\FIT2CLOUD\OSMClient" Name="WindowsInstaller" />
+    </Property>
     <Property Id="LEGACYNSIS" Secure="yes"><RegistrySearch Id="FindLegacyNsis" Root="HKCU" Win64="no" Type="raw" Key="Software\Microsoft\Windows\CurrentVersion\Uninstall\OSMClientQt" Name="InstallLocation" /></Property>
     <Property Id="LEGACYMSI" Secure="yes"><RegistrySearch Id="FindLegacyMsi" Root="HKCU" Win64="no" Type="raw" Key="Software\FIT2CLOUD\OSMClientQt" Name="WindowsInstaller" /></Property>
     <Condition Message="Uninstall the previous per-user OSMClient before installing this version.">Installed OR (NOT LEGACYNSIS AND NOT LEGACYMSI)</Condition>
@@ -65,8 +69,17 @@
          is formatted when the script is generated, so NSISINSTALL is available here. -->
     <CustomAction Id="RemoveNsisInstall" Directory="TARGETDIR" Execute="deferred" Impersonate="no" Return="check"
                   ExeCommand='"[SystemFolder]cmd.exe" /d /c ""[NSISINSTALL]\Uninstall.exe" /S _?=[NSISINSTALL]&amp;&amp; (del /f /q "[NSISINSTALL]\Uninstall.exe" &amp; rd "[NSISINSTALL]" 2&gt;nul &amp; exit /b 0)"' />
+    <!-- Close clients running from this, the previous MSI or the EXE installation before
+         anything is removed (upgrade, EXE replacement, uninstall). Native code: PowerShell
+         process queries are unreliable when Windows Installer runs them as SYSTEM. -->
+    <CustomAction Id="SetCloseInstalledClientsData" Property="CloseInstalledClients"
+                  Value="[INSTALLFOLDER]|[NSISINSTALL]|[MSIINSTALL]" />
+    <CustomAction Id="CloseInstalledClients" BinaryKey="ProtocolGuard" DllEntry="CloseInstalledClients"
+                  Execute="deferred" Impersonate="no" Return="ignore" />
     <InstallExecuteSequence>
       <Custom Action="PrepareJmsRegistration" Before="RemoveRegistryValues">1</Custom>
+      <Custom Action="SetCloseInstalledClientsData" After="CostFinalize">1</Custom>
+      <Custom Action="CloseInstalledClients" Before="RemoveExistingProducts">1</Custom>
       <Custom Action="RemoveNsisInstall" Before="InstallFiles">NSISINSTALL AND NOT Installed</Custom>
     </InstallExecuteSequence>
     <Feature Id="Complete" Title="OSMClient" Level="1">

@@ -51,6 +51,7 @@ Qt 的部署工具不负责所有第三方依赖，参见 [Qt 5.15 Windows deplo
 两种格式默认安装到系统 `Program Files/OSMClient`，需要管理员权限，创建 `OSMClient` 开始菜单和公共桌面快捷方式并注册 `jms://`，可执行文件为 `client.exe`。安装器标题和应用列表显示名为 `OSMClient`。EXE 与 MSI 不能同时管理同一目录，安装时会自动替换已有安装，用户配置保留：
 
 - EXE 启动时检查已有 EXE、MSI 和旧用户级（`OSMClientQt`）安装目录，按完整路径找出从这些目录运行的进程（客户端、Go helper、PuTTY），交互安装先询问再关闭，`/S` 静默安装直接关闭；关不掉则停止安装。随后依次卸载旧用户级 EXE、同一 UpgradeCode 的 MSI（`msiexec /x <ProductCode> /qn`），再调用上一版 EXE 自己的卸载器。EXE 卸载器同样先关闭从安装目录运行的进程。
+- MSI 在 `RemoveExistingProducts` 前由 `windows-jms-ca.cpp` 的 `CloseInstalledClients`（SYSTEM 身份、原生 Toolhelp 枚举）关闭从本次安装目录、旧 MSI 目录和 EXE 目录运行的进程，升级、替换 EXE 和卸载时都会执行；关不掉不会让安装失败，由 Windows Installer 按文件占用处理。不用 PowerShell：SYSTEM 身份下的进程查询实测拿不到结果。
 - MSI 使用同一 UpgradeCode、在安装新文件前执行 major upgrade，旧快捷方式由旧包卸载；已有 EXE 安装时，在 `InstallFiles` 前以 SYSTEM 身份静默运行其卸载器。该卸载不在 MSI 回滚范围内：之后的 MSI 步骤失败时旧 EXE 不会恢复。
 - 无法自动卸载的情况（旧用户级安装没有 `Uninstall.exe`、其他 UpgradeCode 的用户级 MSI）仍提示手动卸载。
 
