@@ -3,6 +3,7 @@ name: Native packages
 on:
   push:
     tags: ['v*']
+    branches: ['fix/windows-icon-button-click']
   pull_request:
     branches: [osm-qt]
   workflow_dispatch:
@@ -38,7 +39,7 @@ env:
 
 jobs:
   metadata:
-    if: github.ref == 'refs/heads/osm-qt' || github.base_ref == 'osm-qt' || github.ref_type == 'tag'
+    if: github.ref == 'refs/heads/fix/windows-icon-button-click'
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -63,6 +64,7 @@ jobs:
         run: python scripts/ci-version.py --github-output "$GITHUB_OUTPUT"
 
   macos:
+    if: ${{ false }}
     needs: metadata
     strategy:
       fail-fast: false
@@ -260,6 +262,7 @@ jobs:
           retention-days: 14
 
   linux:
+    if: ${{ false }}
     needs: metadata
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
@@ -346,6 +349,7 @@ jobs:
   # cannot be installed there. Build a separate arm64 DEB against a Qt 5.12
   # baseline; the package keeps the client identity but a distinct file name.
   linux-kylin:
+    if: ${{ false }}
     needs: metadata
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 60
@@ -406,6 +410,7 @@ jobs:
           retention-days: 14
 
   linux-kylin-rpm:
+    if: ${{ false }}
     needs: metadata
     runs-on: ubuntu-24.04
     timeout-minutes: 60
@@ -449,7 +454,7 @@ jobs:
 
   release:
     needs: [metadata, macos, windows, linux, linux-kylin, linux-kylin-rpm]
-    if: (github.ref == 'refs/heads/osm-qt' || github.base_ref == 'osm-qt' || github.ref_type == 'tag') && (github.ref_type == 'tag' || github.event_name == 'workflow_dispatch')
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
