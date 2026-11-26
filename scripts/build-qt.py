@@ -52,17 +52,17 @@ def extract(source, destination):
 
 def configure_args(prefix, system, arch, deployment_target):
     args = ["-prefix", str(prefix), "-opensource", "-confirm-license", "-release", "-shared",
-            "-nomake", "tests", "-nomake", "examples", "-no-opengl", "-no-dbus", "-no-icu",
+            "-nomake", "tests", "-nomake", "examples", "-no-dbus", "-no-icu",
             "-no-openssl", "-no-zstd", "-qt-zlib", "-qt-libpng",
             "-qt-libjpeg", "-qt-pcre", "-qt-harfbuzz"]
     # Avoid discovering database client libraries from the CI host.
     args += ["-no-sql-" + driver for driver in
              ["db2", "ibase", "mysql", "oci", "odbc", "psql", "sqlite", "sqlite2", "tds"]]
     if system == "Darwin":
-        args += ["-securetransport", "-no-pkg-config", f"QMAKE_APPLE_DEVICE_ARCHS={arch}",
+        args += ["-no-opengl", "-securetransport", "-no-pkg-config", f"QMAKE_APPLE_DEVICE_ARCHS={arch}",
                  f"QMAKE_MACOSX_DEPLOYMENT_TARGET={deployment_target}"]
     else:
-        args += ["-platform", "win32-msvc", "-schannel"]
+        args += ["-platform", "win32-msvc", "-opengl", "desktop", "-schannel"]
     return args
 
 
