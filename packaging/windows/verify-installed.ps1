@@ -115,7 +115,7 @@ function Show-ReplaceDiagnostics([string]$MsiLog) {
 function Assert-ClientClosed($Process, [string]$Step, [string]$MsiLog = '') {
     $Process.Refresh()
     $problem = if (-not $Process.HasExited) { "$Step did not close the running client." }
-               elseif ((Get-ClientProcesses).Count) { "$Step left processes running from the install folder." }
+               elseif (@(Get-ClientProcesses).Count) { "$Step left processes running from the install folder." }
     if ($problem) {
         Show-ReplaceDiagnostics $MsiLog
         throw $problem
