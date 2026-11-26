@@ -107,8 +107,9 @@ extern "C" __declspec(dllexport) UINT __stdcall PrepareJmsRegistration(MSIHANDLE
 
 // ---------------------------------------------------------------------------
 // Close clients running from an installation that is about to be replaced or
-// removed. Deferred, not impersonated (SYSTEM), scheduled before
-// RemoveExistingProducts. CustomActionData is "dir|dir|...". Only processes whose
+// removed. Immediate, scheduled after InstallValidate and before InstallInitialize
+// (deferred actions may not run before InstallInitialize, where the major
+// upgrade removes the old product). OSMCLOSEFOLDERS is "dir|dir|...". Only processes whose
 // image lies inside one of those absolute, non-root folders are closed; the
 // image name alone is never used. Failures never fail the installation: files
 // still in use are then handled by Windows Installer as usual.
@@ -168,14 +169,14 @@ extern "C" __declspec(dllexport) UINT __stdcall CloseInstalledClients(MSIHANDLE 
 {
     DWORD length = 0;
     WCHAR empty = 0;
-    if (MsiGetPropertyW(session, L"CustomActionData", &empty, &length) != ERROR_MORE_DATA
+    if (MsiGetPropertyW(session, L"OSMCLOSEFOLDERS", &empty, &length) != ERROR_MORE_DATA
             || length == 0 || length > 8192)
         return ERROR_SUCCESS;
     ++length;
     const DWORD imageCapacity = 32768;
     auto *data = static_cast<WCHAR *>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, (length + 1) * sizeof(WCHAR)));
     auto *image = static_cast<WCHAR *>(HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, imageCapacity * sizeof(WCHAR)));
-    if (data && image && MsiGetPropertyW(session, L"CustomActionData", data, &length) == ERROR_SUCCESS) {
+    if (data && image && MsiGetPropertyW(session, L"OSMCLOSEFOLDERS", data, &length) == ERROR_SUCCESS) {
         WCHAR *segment = data;
         for (WCHAR *p = data;; ++p) {
             const bool last = *p == 0;

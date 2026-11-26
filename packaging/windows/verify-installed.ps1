@@ -155,7 +155,7 @@ try {
             Write-Host "Verifying $extension installation (other handler takeover: $takeover)"
             if ($extension -eq 'msi') {
                 $log = Join-Path $destination "verify-$extension-$takeover-install.log"
-                Invoke-CheckedProcess 'msiexec.exe' "/i `"$package`" /qn /norestart /L*v `"$log`"" @(0, 3010)
+                Invoke-Msi "/i `"$package`" /qn /norestart" $log
             } else {
                 Invoke-CheckedProcess $package '/S'
             }
@@ -168,7 +168,7 @@ try {
             }
             if ($extension -eq 'msi') {
                 $log = Join-Path $destination "verify-$extension-$takeover-uninstall.log"
-                Invoke-CheckedProcess 'msiexec.exe' "/x `"$package`" /qn /norestart /L*v `"$log`"" @(0, 3010)
+                Invoke-Msi "/x `"$package`" /qn /norestart" $log
             } else {
                 # _?= keeps the uninstaller in this process so exit means completion.
                 Invoke-CheckedProcess (Join-Path $InstallDir 'Uninstall.exe') "/S _?=$InstallDir"

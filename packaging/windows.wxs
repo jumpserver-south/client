@@ -71,15 +71,18 @@
                   ExeCommand='"[SystemFolder]cmd.exe" /d /c ""[NSISINSTALL]\Uninstall.exe" /S _?=[NSISINSTALL]&amp;&amp; (del /f /q "[NSISINSTALL]\Uninstall.exe" &amp; rd "[NSISINSTALL]" 2&gt;nul &amp; exit /b 0)"' />
     <!-- Close clients running from this, the previous MSI or the EXE installation before
          anything is removed (upgrade, EXE replacement, uninstall). Native code: PowerShell
-         process queries are unreliable when Windows Installer runs them as SYSTEM. -->
-    <CustomAction Id="SetCloseInstalledClientsData" Property="CloseInstalledClients"
+         process queries are unreliable when Windows Installer runs them as SYSTEM.
+         Immediate and before InstallInitialize: with afterInstallInitialize the major
+         upgrade removes the old product right after it, and deferred actions are not
+         allowed earlier. -->
+    <CustomAction Id="SetCloseInstalledClientsData" Property="OSMCLOSEFOLDERS"
                   Value="[INSTALLFOLDER]|[NSISINSTALL]|[MSIINSTALL]" />
     <CustomAction Id="CloseInstalledClients" BinaryKey="ProtocolGuard" DllEntry="CloseInstalledClients"
-                  Execute="deferred" Impersonate="no" Return="ignore" />
+                  Execute="immediate" Return="ignore" />
     <InstallExecuteSequence>
       <Custom Action="PrepareJmsRegistration" Before="RemoveRegistryValues">1</Custom>
       <Custom Action="SetCloseInstalledClientsData" After="CostFinalize">1</Custom>
-      <Custom Action="CloseInstalledClients" Before="RemoveExistingProducts">1</Custom>
+      <Custom Action="CloseInstalledClients" After="InstallValidate">1</Custom>
       <Custom Action="RemoveNsisInstall" Before="InstallFiles">NSISINSTALL AND NOT Installed</Custom>
     </InstallExecuteSequence>
     <Feature Id="Complete" Title="OSMClient" Level="1">
