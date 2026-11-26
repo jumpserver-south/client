@@ -49,11 +49,29 @@ UninstPage instfiles
 ; Interactive runs ask
 ; first; silent runs close without asking. Pushes 1 to continue, 0 to stop.
 !macro DefineCloseClient PREFIX
+; Append one line to %TEMP%\OSMClient-setup.log (C:\Windows\Temp or SystemTemp
+; when run by Windows Installer as SYSTEM). Message on the stack.
+Function ${PREFIX}SetupLog
+ Exch $R8
+ Push $R7
+ ClearErrors
+ FileOpen $R7 "$TEMP\OSMClient-setup.log" a
+ ${IfNot} ${Errors}
+  FileSeek $R7 0 END
+  FileWrite $R7 "$R8$\r$\n"
+  FileClose $R7
+ ${EndIf}
+ Pop $R7
+ Pop $R8
+FunctionEnd
+
 Function ${PREFIX}CloseClient
  Exch $R9
  Push $R0
  Push $R1
  Push $R2
+ Push $R3
+ Push $R4
  StrCpy $R1 1
  ${If} $R9 != ""
  ${AndIf} ${FileExists} "$R9\*.*"
@@ -62,22 +80,26 @@ Function ${PREFIX}CloseClient
   ; into the PowerShell command line. WMI reports 64-bit process paths to this
   ; 32-bit installer as well. "?" means the query failed: continue as before and
   ; let the uninstall step report locked files.
-  StrCpy $R2 `$$ErrorActionPreference='Stop'; try { $$self=[int]$$env:OSM_CLIENT_SELF; $$d=[IO.Path]::GetFullPath($$env:OSM_CLIENT_DIR).TrimEnd([char]92)+[char]92; $$f={ @(Get-WmiObject Win32_Process | Where-Object { $$_.ExecutablePath -and $$_.ProcessId -ne $$self -and $$_.ExecutablePath.StartsWith($$d,[StringComparison]::OrdinalIgnoreCase) }) }; $$p=& $$f; if ($$env:OSM_CLIENT_ACTION -eq 'stop' -and $$p.Count) { $$p | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep -Milliseconds 800; $$p=& $$f }; [Console]::Out.Write($$p.Count) } catch { [Console]::Out.Write('?') }`
+  StrCpy $R2 `$$ErrorActionPreference='Stop'; try { $$self=[int]$$env:OSM_CLIENT_SELF; $$d=[IO.Path]::GetFullPath($$env:OSM_CLIENT_DIR).TrimEnd([char]92)+[char]92; $$f={ @(Get-WmiObject Win32_Process | Where-Object { $$_.ExecutablePath -and $$_.ProcessId -ne $$self -and $$_.ExecutablePath.StartsWith($$d,[StringComparison]::OrdinalIgnoreCase) }) }; $$p=& $$f; if ($$env:OSM_CLIENT_ACTION -eq 'stop' -and $$p.Count) { $$p | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep -Milliseconds 800; $$p=& $$f }; [Console]::Out.Write($$p.Count) } catch { [Console]::Out.Write('?'+$$_.Exception.Message) }`
   System::Call 'kernel32::GetCurrentProcessId() i .R0'
   System::Call 'kernel32::SetEnvironmentVariable(t "OSM_CLIENT_SELF", t "$R0")'
   System::Call 'kernel32::SetEnvironmentVariable(t "OSM_CLIENT_DIR", t "$R9")'
   System::Call 'kernel32::SetEnvironmentVariable(t "OSM_CLIENT_ACTION", t "count")'
   nsExec::ExecToStack /TIMEOUT=60000 `"${POWERSHELL}" -NoProfile -NonInteractive -Command "$R2"`
-  Pop $R0
-  Pop $R0
-  IntOp $R0 $R0 + 0
+  Pop $R3
+  Pop $R4
+  Push "${PREFIX}CloseClient dir=$R9 self=$R0 found=$R4 exit=$R3"
+  Call ${PREFIX}SetupLog
+  IntOp $R0 $R4 + 0
   ${If} $R0 > 0
    ${If} ${Cmd} `MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "OSMClient is running from $R9.$\r$\n$\r$\nIt will be closed, together with any remote sessions it opened. Click OK to continue." /SD IDOK IDOK`
     System::Call 'kernel32::SetEnvironmentVariable(t "OSM_CLIENT_ACTION", t "stop")'
     nsExec::ExecToStack /TIMEOUT=60000 `"${POWERSHELL}" -NoProfile -NonInteractive -Command "$R2"`
-    Pop $R0
-    Pop $R0
-    IntOp $R0 $R0 + 0
+    Pop $R3
+    Pop $R4
+    Push "${PREFIX}CloseClient stopped dir=$R9 remaining=$R4 exit=$R3"
+    Call ${PREFIX}SetupLog
+    IntOp $R0 $R4 + 0
     ${If} $R0 > 0
      MessageBox MB_ICONSTOP "OSMClient could not be closed. Quit it from the tray icon and try again." /SD IDOK
      StrCpy $R1 0
@@ -86,8 +108,13 @@ Function ${PREFIX}CloseClient
     StrCpy $R1 0
    ${EndIf}
   ${EndIf}
+ ${ElseIf} $R9 != ""
+  Push "${PREFIX}CloseClient skipped dir=$R9"
+  Call ${PREFIX}SetupLog
  ${EndIf}
  StrCpy $R9 $R1
+ Pop $R4
+ Pop $R3
  Pop $R2
  Pop $R1
  Pop $R0
@@ -166,6 +193,8 @@ Section "Install"
    StrCpy $3 $2
    DetailPrint "Removing the installed OSMClient MSI package $2..."
    ExecWait '"$SYSDIR\msiexec.exe" /x $2 /qn /norestart' $5
+   Push "Install removed MSI $2 exit=$5"
+   Call SetupLog
    ${If} $5 != 0
    ${AndIf} $5 != 3010
     Abort "The installed OSMClient MSI package could not be removed (msiexec exit code $5). Uninstall it from Windows Settings and retry."
@@ -193,6 +222,8 @@ Section "Install"
   ${If} ${FileExists} "$0\Uninstall.exe"
    DetailPrint "Removing the previous OSMClient..."
    ExecWait '$\"$0\Uninstall.exe$\" /S _?=$0' $1
+   Push "Install ran previous uninstaller dir=$0 exit=$1"
+   Call SetupLog
    ${If} $1 != 0
     Abort "The previous version could not be uninstalled. Close the client and retry."
    ${EndIf}

@@ -71,8 +71,8 @@ function Show-MsiLog([string]$Log) {
         $lines[$start..$index] | ForEach-Object { Write-Host $_ }
         Write-Host '----'
     }
-    $lines | Where-Object { $_ -match 'RemoveNsisInstall|NSISINSTALL|Error 17|CustomAction .* returned|Product: OSMClient' } |
-        Select-Object -First 40 | ForEach-Object { Write-Host $_ }
+    $lines | Where-Object { $_ -match 'RemoveNsisInstall|NSISINSTALL|AppSearch|Error 17|CustomAction .* returned|Product: OSMClient|Doing action: InstallFiles' } |
+        Select-Object -First 60 | ForEach-Object { Write-Host $_ }
     Write-Host '==== end of MSI log excerpt'
 }
 
@@ -94,10 +94,31 @@ function Start-Client {
     return $process
 }
 
-function Assert-ClientClosed($Process, [string]$Step) {
+function Show-ReplaceDiagnostics([string]$MsiLog) {
+    Write-Host '==== replacement diagnostics'
+    Get-ClientProcesses | ForEach-Object { Write-Host "running: $($_.ProcessId) $($_.ExecutablePath)" }
+    Write-Host "EXE registration: $(Test-RegistryValue $NsisKey 'InstallLocation'); MSI marker: $(Test-RegistryValue $MsiKey 'WindowsInstaller')"
+    Write-Host "Uninstall.exe present: $(Test-Path -LiteralPath (Join-Path $InstallDir 'Uninstall.exe'))"
+    $logs = @((Join-Path $env:SystemRoot 'Temp\OSMClient-setup.log'),
+              (Join-Path $env:SystemRoot 'SystemTemp\OSMClient-setup.log'),
+              (Join-Path $env:TEMP 'OSMClient-setup.log')) | Select-Object -Unique
+    foreach ($log in $logs) {
+        if (Test-Path -LiteralPath $log) {
+            Write-Host "-- $log"
+            Get-Content -LiteralPath $log | ForEach-Object { Write-Host $_ }
+        } else { Write-Host "-- $log (missing)" }
+    }
+    if ($MsiLog) { Show-MsiLog $MsiLog }
+}
+
+function Assert-ClientClosed($Process, [string]$Step, [string]$MsiLog = '') {
     $Process.Refresh()
-    if (-not $Process.HasExited) { throw "$Step did not close the running client." }
-    if ((Get-ClientProcesses).Count) { throw "$Step left processes running from the install folder." }
+    $problem = if (-not $Process.HasExited) { "$Step did not close the running client." }
+               elseif ((Get-ClientProcesses).Count) { "$Step left processes running from the install folder." }
+    if ($problem) {
+        Show-ReplaceDiagnostics $MsiLog
+        throw $problem
+    }
 }
 
 function Verify-Payload {
@@ -182,7 +203,7 @@ try {
     $client = Start-Client
     $log = Join-Path $destination 'verify-replace-exe-with-msi.log'
     Invoke-Msi "/i `"$msiPackage`" /qn /norestart" $log
-    Assert-ClientClosed $client 'MSI replacing the EXE installation'
+    Assert-ClientClosed $client 'MSI replacing the EXE installation' $log
     if (Test-RegistryValue $NsisKey 'InstallLocation') { throw 'MSI install did not remove the EXE installation.' }
     if (-not (Test-RegistryValue $MsiKey 'WindowsInstaller')) { throw 'MSI install marker is missing after replacing the EXE installation.' }
     if (Test-Path -LiteralPath (Join-Path $InstallDir 'Uninstall.exe')) { throw 'MSI replacement left the EXE uninstaller behind.' }
