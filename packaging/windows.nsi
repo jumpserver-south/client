@@ -18,6 +18,9 @@ Unicode true
 !ifdef SIGN_UNINSTALLER
  !uninstfinalize '${SIGN_UNINSTALLER} "%1"'
 !endif
+; Must match packaging/windows.wxs so the EXE can find and remove the MSI package.
+!define UPGRADE_CODE "{DAF0A2B2-B00D-48A9-A57C-668B31E368A0}"
+!define POWERSHELL "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
 Name "OSMClient"
 OutFile "${OUTPUT}"
 !if "${ARCH}" == "amd64"
@@ -39,6 +42,66 @@ Page instfiles
 UninstPage uninstConfirm
 UninstPage instfiles
 
+; Close every process started from the directory on the stack (the client, its
+; Go helper and PuTTY), so the old files can be removed. Processes are matched by
+; full path inside that directory, never by image name alone. Interactive runs ask
+; first; silent runs close without asking. Pushes 1 to continue, 0 to stop.
+!macro DefineCloseClient PREFIX
+Function ${PREFIX}CloseClient
+ Exch $R9
+ Push $R0
+ Push $R1
+ Push $R2
+ StrCpy $R1 1
+ ${If} $R9 != ""
+ ${AndIf} ${FileExists} "$R9\*.*"
+ ${AndIf} ${FileExists} "${POWERSHELL}"
+  ; The directory and mode go through the environment, so no path is ever quoted
+  ; into the PowerShell command line. WMI reports 64-bit process paths to this
+  ; 32-bit installer as well. "?" means the query failed: continue as before and
+  ; let the uninstall step report locked files.
+  StrCpy $R2 `$$ErrorActionPreference='Stop'; try { $$d=[IO.Path]::GetFullPath($$env:OSM_CLIENT_DIR).TrimEnd([char]92)+[char]92; $$f={ @(Get-WmiObject Win32_Process | Where-Object { $$_.ExecutablePath -and $$_.ExecutablePath.StartsWith($$d,[StringComparison]::OrdinalIgnoreCase) }) }; $$p=& $$f; if ($$env:OSM_CLIENT_ACTION -eq 'stop' -and $$p.Count) { $$p | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep -Milliseconds 800; $$p=& $$f }; [Console]::Out.Write($$p.Count) } catch { [Console]::Out.Write('?') }`
+  System::Call 'kernel32::SetEnvironmentVariable(t "OSM_CLIENT_DIR", t "$R9")'
+  System::Call 'kernel32::SetEnvironmentVariable(t "OSM_CLIENT_ACTION", t "count")'
+  nsExec::ExecToStack /TIMEOUT=60000 `"${POWERSHELL}" -NoProfile -NonInteractive -Command "$R2"`
+  Pop $R0
+  Pop $R0
+  IntOp $R0 $R0 + 0
+  ${If} $R0 > 0
+   ${If} ${Cmd} `MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "OSMClient is running from $R9.$\r$\n$\r$\nIt will be closed, together with any remote sessions it opened. Click OK to continue." /SD IDOK IDOK`
+    System::Call 'kernel32::SetEnvironmentVariable(t "OSM_CLIENT_ACTION", t "stop")'
+    nsExec::ExecToStack /TIMEOUT=60000 `"${POWERSHELL}" -NoProfile -NonInteractive -Command "$R2"`
+    Pop $R0
+    Pop $R0
+    IntOp $R0 $R0 + 0
+    ${If} $R0 > 0
+     MessageBox MB_ICONSTOP "OSMClient could not be closed. Quit it from the tray icon and try again." /SD IDOK
+     StrCpy $R1 0
+    ${EndIf}
+   ${Else}
+    StrCpy $R1 0
+   ${EndIf}
+  ${EndIf}
+ ${EndIf}
+ StrCpy $R9 $R1
+ Pop $R2
+ Pop $R1
+ Pop $R0
+ Exch $R9
+FunctionEnd
+!macroend
+!insertmacro DefineCloseClient ""
+!insertmacro DefineCloseClient "un."
+
+!macro CloseClientOrAbort DIR
+ ${If} ${DIR} != ""
+  Push ${DIR}
+  Call CloseClient
+  Pop $R0
+  ${IfThen} $R0 != 1 ${|} Abort ${|}
+ ${EndIf}
+!macroend
+
 Function .onInit
  SetShellVarContext all
  SetRegView 32
@@ -48,26 +111,74 @@ Function .onInit
    Abort
   ${EndIf}
  !endif
- ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\OSMClientQt" "InstallLocation"
- ${If} $0 != ""
-  MessageBox MB_ICONSTOP "Uninstall the previous per-user OSMClient before installing this version."
-  Abort
- ${EndIf}
+ ; Close clients of every installation this setup is going to replace.
+ ReadRegStr $0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OSMClient" "InstallLocation"
+ !insertmacro CloseClientOrAbort "$0"
  ReadRegStr $0 HKLM "Software\FIT2CLOUD\OSMClient" "WindowsInstaller"
- ${If} $0 != ""
-  MessageBox MB_ICONSTOP "An MSI installation exists. Uninstall it before installing the EXE package."
-  Abort
- ${EndIf}
- ReadRegStr $0 HKCU "Software\FIT2CLOUD\OSMClientQt" "WindowsInstaller"
- ${If} $0 != ""
-  MessageBox MB_ICONSTOP "An MSI installation exists. Uninstall it from Windows Settings before installing the EXE package."
-  Abort
- ${EndIf}
+ !insertmacro CloseClientOrAbort "$0"
+ ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\OSMClientQt" "InstallLocation"
+ !insertmacro CloseClientOrAbort "$0"
+FunctionEnd
+
+Function un.onInit
+ SetShellVarContext all
+ SetRegView 32
+ Push "$INSTDIR"
+ Call un.CloseClient
+ Pop $0
+ ${IfThen} $0 != 1 ${|} Abort ${|}
 FunctionEnd
 
 Section "Install"
- ; The previous installer removes its own files and old shortcut name on upgrade.
- ; Keep the registry/install identity stable while the display name changes.
+ ; 1. An old per-user EXE installation (pre-rename OSMClientQt).
+ ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\OSMClientQt" "InstallLocation"
+ ${If} $0 != ""
+ ${AndIf} ${FileExists} "$0\Uninstall.exe"
+  DetailPrint "Removing the previous per-user OSMClient..."
+  ExecWait '"$0\Uninstall.exe" /S _?=$0' $1
+  ${If} $1 != 0
+   Abort "The previous per-user OSMClient could not be uninstalled. Uninstall it from Windows Settings and retry."
+  ${EndIf}
+  Delete "$0\Uninstall.exe"
+  RMDir "$0"
+ ${EndIf}
+ ReadRegStr $0 HKCU "Software\Microsoft\Windows\CurrentVersion\Uninstall\OSMClientQt" "InstallLocation"
+ ${If} $0 != ""
+  Abort "Uninstall the previous per-user OSMClient from Windows Settings before installing this version."
+ ${EndIf}
+
+ ; 2. MSI installations with the same UpgradeCode (per-machine, or this user's).
+ ReadRegStr $0 HKLM "Software\FIT2CLOUD\OSMClient" "WindowsInstaller"
+ ReadRegStr $1 HKCU "Software\FIT2CLOUD\OSMClientQt" "WindowsInstaller"
+ ${If} $0 != ""
+ ${OrIf} $1 != ""
+  StrCpy $3 ""
+  ${Do}
+   System::Call 'msi::MsiEnumRelatedProductsW(w "${UPGRADE_CODE}", i 0, i 0, w .r2) i .r4'
+   ${If} $4 != 0
+   ${OrIf} $2 == $3
+    ${ExitDo}
+   ${EndIf}
+   StrCpy $3 $2
+   DetailPrint "Removing the installed OSMClient MSI package $2..."
+   ExecWait '"$SYSDIR\msiexec.exe" /x $2 /qn /norestart' $5
+   ${If} $5 != 0
+   ${AndIf} $5 != 3010
+    Abort "The installed OSMClient MSI package could not be removed (msiexec exit code $5). Uninstall it from Windows Settings and retry."
+   ${EndIf}
+  ${Loop}
+  ReadRegStr $0 HKLM "Software\FIT2CLOUD\OSMClient" "WindowsInstaller"
+  ${If} $0 != ""
+   Abort "An MSI installation of OSMClient remains. Uninstall it from Windows Settings and retry."
+  ${EndIf}
+  ReadRegStr $1 HKCU "Software\FIT2CLOUD\OSMClientQt" "WindowsInstaller"
+  ${If} $1 != ""
+   Abort "A per-user MSI installation of OSMClient remains. Uninstall it from Windows Settings and retry."
+  ${EndIf}
+ ${EndIf}
+
+ ; 3. A previous EXE installation: run its own uninstaller. The registry/install
+ ; identity stays stable while the display name changes.
  ReadRegStr $0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\OSMClient" "InstallLocation"
  ${If} $0 == ""
   ${If} ${FileExists} "$INSTDIR\*.*"
@@ -76,10 +187,14 @@ Section "Install"
  ${EndIf}
  ${If} $0 != ""
   ${If} ${FileExists} "$0\Uninstall.exe"
+   DetailPrint "Removing the previous OSMClient..."
    ExecWait '$\"$0\Uninstall.exe$\" /S _?=$0' $1
    ${If} $1 != 0
     Abort "The previous version could not be uninstalled. Close the client and retry."
    ${EndIf}
+   ; _?= keeps the old uninstaller in place; remove it and the emptied folder.
+   Delete "$0\Uninstall.exe"
+   RMDir "$0"
   ${EndIf}
  ${EndIf}
  !insertmacro InstallPayload

@@ -45,6 +45,37 @@ function Invoke-CheckedProcess([string]$File, [string]$Arguments, [int[]]$Allowe
     } finally { $process.Dispose() }
 }
 
+$NsisKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\OSMClient'
+$MsiKey = 'Software\FIT2CLOUD\OSMClient'
+
+function Test-RegistryValue([string]$Key, [string]$Name) {
+    $key = $Registry.OpenSubKey($Key)
+    if ($null -eq $key) { return $false }
+    try { return $null -ne $key.GetValue($Name) } finally { $key.Dispose() }
+}
+
+function Get-ClientProcesses {
+    $prefix = $InstallDir.TrimEnd('\') + '\'
+    @(Get-CimInstance Win32_Process | Where-Object {
+        $_.ExecutablePath -and $_.ExecutablePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
+    })
+}
+
+function Start-Client {
+    $process = Start-Process -FilePath (Join-Path $InstallDir 'client.exe') -PassThru
+    Start-Sleep -Seconds 3
+    if ($process.HasExited) {
+        Write-Warning "client.exe exited before replacement (exit $($process.ExitCode)); running-client handling is not exercised."
+    }
+    return $process
+}
+
+function Assert-ClientClosed($Process, [string]$Step) {
+    $Process.Refresh()
+    if (-not $Process.HasExited) { throw "$Step did not close the running client." }
+    if ((Get-ClientProcesses).Count) { throw "$Step left processes running from the install folder." }
+}
+
 function Verify-Payload {
     $helper = if ($Arch -eq 'amd64') { 'JumpServerClient.exe' } else { 'JumpServerClient32.exe' }
     foreach ($relative in @('client.exe', 'platforms\qwindows.dll', "bin\windows\$helper", 'bin\windows\putty.exe')) {
@@ -116,7 +147,47 @@ try {
             }
         }
     }
-    Write-Host 'EXE/MSI installed payload and jms ownership checks passed.'
+
+    # Replacement of an existing installation while its client is running:
+    # EXE -> MSI, MSI -> EXE, then EXE -> EXE of the same version.
+    $exePackage = @(Get-ChildItem -LiteralPath $destination -Filter "OSMClient-*-windows-$Arch.exe")[0].FullName
+    $msiPackage = @(Get-ChildItem -LiteralPath $destination -Filter "OSMClient-*-windows-$Arch.msi")[0].FullName
+    Write-Host 'Verifying replacement of existing installations with a running client'
+    Invoke-CheckedProcess $exePackage '/S'
+    Verify-Payload
+    $client = Start-Client
+    $log = Join-Path $destination 'verify-replace-exe-with-msi.log'
+    Invoke-CheckedProcess 'msiexec.exe' "/i `"$msiPackage`" /qn /norestart /L*v `"$log`"" @(0, 3010)
+    Assert-ClientClosed $client 'MSI replacing the EXE installation'
+    if (Test-RegistryValue $NsisKey 'InstallLocation') { throw 'MSI install did not remove the EXE installation.' }
+    if (-not (Test-RegistryValue $MsiKey 'WindowsInstaller')) { throw 'MSI install marker is missing after replacing the EXE installation.' }
+    if (Test-Path -LiteralPath (Join-Path $InstallDir 'Uninstall.exe')) { throw 'MSI replacement left the EXE uninstaller behind.' }
+    Verify-Payload
+
+    $client = Start-Client
+    Invoke-CheckedProcess $exePackage '/S'
+    Assert-ClientClosed $client 'EXE replacing the MSI installation'
+    if (Test-RegistryValue $MsiKey 'WindowsInstaller') { throw 'EXE install did not remove the MSI installation.' }
+    if (-not (Test-RegistryValue $NsisKey 'InstallLocation')) { throw 'EXE install registration is missing after replacing the MSI installation.' }
+    Verify-Payload
+
+    $client = Start-Client
+    Invoke-CheckedProcess $exePackage '/S'
+    Assert-ClientClosed $client 'EXE reinstalling over the EXE installation'
+    Verify-Payload
+
+    $client = Start-Client
+    Invoke-CheckedProcess (Join-Path $InstallDir 'Uninstall.exe') "/S _?=$InstallDir"
+    Assert-ClientClosed $client 'EXE uninstall'
+    $uninstaller = Join-Path $InstallDir 'Uninstall.exe'
+    if (Test-Path -LiteralPath $uninstaller) { Remove-Item -LiteralPath $uninstaller }
+    if ((Test-Path -LiteralPath $InstallDir) -and @(Get-ChildItem -LiteralPath $InstallDir -Force).Count -eq 0) {
+        Remove-Item -LiteralPath $InstallDir
+    }
+    if (Test-Path -LiteralPath (Join-Path $InstallDir 'client.exe')) { throw 'Final uninstall left the application executable.' }
+    if (Test-RegistryValue $NsisKey 'InstallLocation') { throw 'Final uninstall left the EXE registration.' }
+    if ($null -ne (Read-Command)) { throw 'Final uninstall retained its own jms command.' }
+    Write-Host 'EXE/MSI installed payload, replacement and jms ownership checks passed.'
 } finally {
     $Registry.Dispose()
 }
