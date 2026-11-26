@@ -48,10 +48,11 @@ function Invoke-CheckedProcess([string]$File, [string]$Arguments, [int[]]$Allowe
 $NsisKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\OSMClient'
 $MsiKey = 'Software\FIT2CLOUD\OSMClient'
 
-function Test-RegistryValue([string]$Key, [string]$Name) {
-    $key = $Registry.OpenSubKey($Key)
-    if ($null -eq $key) { return $false }
-    try { return $null -ne $key.GetValue($Name) } finally { $key.Dispose() }
+function Test-RegistryValue([string]$Path, [string]$Name) {
+    # PowerShell variable names are case-insensitive: keep the opened key apart from the path.
+    $subKey = $Registry.OpenSubKey($Path)
+    if ($null -eq $subKey) { return $false }
+    try { return $null -ne $subKey.GetValue($Name) } finally { $subKey.Dispose() }
 }
 
 function Get-ClientProcesses {
