@@ -55,7 +55,7 @@ Qt 的部署工具不负责所有第三方依赖，参见 [Qt 5.15 Windows deplo
 - MSI 使用同一 UpgradeCode、在安装新文件前执行 major upgrade，旧快捷方式由旧包卸载；已有 EXE 安装时，在 `InstallFiles` 前以 SYSTEM 身份静默运行其卸载器。该卸载不在 MSI 回滚范围内：之后的 MSI 步骤失败时旧 EXE 不会恢复。
 - 无法自动卸载的情况（旧用户级安装没有 `Uninstall.exe`、其他 UpgradeCode 的用户级 MSI）仍提示手动卸载。
 
-进程按完整路径匹配，不按 `client.exe` 进程名结束其他程序；查询失败时按原逻辑继续，由卸载步骤报告文件占用。用户配置和系统凭据库不在卸载文件清单中。
+进程用 Toolhelp 枚举、按完整路径匹配（EXE 通过 NSIS System 插件，MSI 通过保护 DLL），不按 `client.exe` 进程名结束其他程序，也不依赖 PowerShell（CI 实测有客户端运行时查询拿不到结果）；EXE 关不掉时停止安装，MSI 交给 Windows Installer 按文件占用处理。安装器把检查目录、找到和剩余的进程数写入 `%TEMP%\OSMClient-setup.log`。用户配置和系统凭据库不在卸载文件清单中。
 
 NSIS 仅删除生成清单中的文件，不递归清空用户选择的目录。NSIS 卸载前比较当前 `jms` command；MSI 通过 `windows-jms-ca.cpp` 在 `RemoveRegistryValues` 前检查同一条件。MSI 不持久化共享 `jms` 的 Registry 行：安装/修复时临时添加四行，由标准动作写入；卸载时仅在仍属本程序的情况下添加临时行供标准动作移除，其他客户端已接管则不添加。这样仍由 MSI 标准动作管理回滚，CA 不改持久表行、不直接修改注册表。依据 [Microsoft 当前安装会话限制](https://learn.microsoft.com/en-us/windows/win32/msi/accessing-the-current-installer-session-from-inside-a-custom-action) 和 [RemoveRegistryValues action](https://learn.microsoft.com/en-us/windows/win32/msi/removeregistryvalues-action)。卸载不会自动恢复安装前的旧协议处理器。
 

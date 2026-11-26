@@ -20,7 +20,6 @@ Unicode true
 !endif
 ; Must match packaging/windows.wxs so the EXE can find and remove the MSI package.
 !define UPGRADE_CODE "{DAF0A2B2-B00D-48A9-A57C-668B31E368A0}"
-!define POWERSHELL "$SYSDIR\WindowsPowerShell\v1.0\powershell.exe"
 Name "OSMClient"
 OutFile "${OUTPUT}"
 !if "${ARCH}" == "amd64"
@@ -43,14 +42,27 @@ UninstPage uninstConfirm
 UninstPage instfiles
 
 ; Close every process started from the directory on the stack (the client, its
-; Go helper and PuTTY), so the old files can be removed. Processes are matched by
-; full path inside that directory, never by image name alone. The calling process
-; is excluded: an uninstaller started with _?= runs in place from that directory.
-; Interactive runs ask
-; first; silent runs close without asking. Pushes 1 to continue, 0 to stop.
+; Go helper and PuTTY), so the old files can be removed. Processes are listed with
+; Toolhelp and matched by full image path inside that directory, never by image
+; name alone; a 32-bit installer can read and terminate 64-bit processes this way.
+; The calling process is excluded: an uninstaller started with _?= runs in place
+; from that directory. No PowerShell: its query returned nothing in CI whenever a
+; client was running. Interactive runs ask first; silent runs close without
+; asking. Pushes 1 to continue, 0 to stop.
+Var ProcDir
+Var ProcMode
+Var ProcCount
+Var ProcSnap
+Var ProcEntry
+Var ProcOk
+Var ProcPid
+Var ProcHandle
+Var ProcPrefix
+Var ProcLen
+Var ProcSelf
+
 !macro DefineCloseClient PREFIX
-; Append one line to %TEMP%\OSMClient-setup.log (C:\Windows\Temp or SystemTemp
-; when run by Windows Installer as SYSTEM). Message on the stack.
+; Append one line to %TEMP%\OSMClient-setup.log. Message on the stack.
 Function ${PREFIX}SetupLog
  Exch $R8
  Push $R7
@@ -65,42 +77,97 @@ Function ${PREFIX}SetupLog
  Pop $R8
 FunctionEnd
 
+; In: $ProcDir, $ProcMode (0 count, 1 terminate). Out: $ProcCount matching processes.
+Function ${PREFIX}FolderProcesses
+ Push $0
+ Push $1
+ Push $2
+ Push $3
+ StrCpy $ProcCount 0
+ StrCpy $ProcPrefix $ProcDir
+ ${Do}
+  StrCpy $0 $ProcPrefix 1 -1
+  ${If} $0 != "\"
+   ${ExitDo}
+  ${EndIf}
+  StrCpy $ProcPrefix $ProcPrefix -1
+ ${Loop}
+ StrLen $ProcLen $ProcPrefix
+ StrCpy $0 $ProcPrefix 2 1
+ ; Absolute drive path below the root only, e.g. C:\Program Files\OSMClient.
+ ${If} $ProcLen >= 4
+ ${AndIf} $0 == ":\"
+  StrCpy $ProcPrefix "$ProcPrefix\"
+  IntOp $ProcLen $ProcLen + 1
+  System::Call 'kernel32::GetCurrentProcessId() i .r0'
+  StrCpy $ProcSelf $0
+  System::Call 'kernel32::CreateToolhelp32Snapshot(i 2, i 0) p .r0'
+  StrCpy $ProcSnap $0
+  ${If} $ProcSnap <> -1
+  ${AndIf} $ProcSnap <> 0
+   ; PROCESSENTRY32W; &l4 fills dwSize with the structure size.
+   System::Call '*(&l4, i, i, p, i, i, i, i, i, &w260) p .r0'
+   StrCpy $ProcEntry $0
+   System::Call 'kernel32::Process32FirstW(p $ProcSnap, p $ProcEntry) i .r0'
+   StrCpy $ProcOk $0
+   ${DoWhile} $ProcOk <> 0
+    System::Call '*$ProcEntry(i, i, i .r0)'
+    StrCpy $ProcPid $0
+    ${If} $ProcPid <> 0
+    ${AndIf} $ProcPid <> $ProcSelf
+     ; PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_TERMINATE | SYNCHRONIZE
+     System::Call 'kernel32::OpenProcess(i 0x101001, i 0, i $ProcPid) p .r0'
+     StrCpy $ProcHandle $0
+     ${If} $ProcHandle <> 0
+      System::Call 'kernel32::QueryFullProcessImageNameW(p $ProcHandle, i 0, w .r1, *i ${NSIS_MAX_STRLEN}) i .r2'
+      ${If} $2 <> 0
+       StrCpy $3 $1 $ProcLen
+       ; NSIS string == compares case-insensitively.
+       ${If} $3 == $ProcPrefix
+        IntOp $ProcCount $ProcCount + 1
+        ${If} $ProcMode = 1
+         System::Call 'kernel32::TerminateProcess(p $ProcHandle, i 1)'
+         System::Call 'kernel32::WaitForSingleObject(p $ProcHandle, i 5000)'
+        ${EndIf}
+       ${EndIf}
+      ${EndIf}
+      System::Call 'kernel32::CloseHandle(p $ProcHandle)'
+     ${EndIf}
+    ${EndIf}
+    System::Call 'kernel32::Process32NextW(p $ProcSnap, p $ProcEntry) i .r0'
+    StrCpy $ProcOk $0
+   ${Loop}
+   System::Free $ProcEntry
+   System::Call 'kernel32::CloseHandle(p $ProcSnap)'
+  ${EndIf}
+ ${EndIf}
+ Pop $3
+ Pop $2
+ Pop $1
+ Pop $0
+FunctionEnd
+
 Function ${PREFIX}CloseClient
  Exch $R9
- Push $R0
  Push $R1
- Push $R2
- Push $R3
- Push $R4
  StrCpy $R1 1
  ${If} $R9 != ""
  ${AndIf} ${FileExists} "$R9\*.*"
- ${AndIf} ${FileExists} "${POWERSHELL}"
-  ; The directory and mode go through the environment, so no path is ever quoted
-  ; into the PowerShell command line. WMI reports 64-bit process paths to this
-  ; 32-bit installer as well. "?" means the query failed: continue as before and
-  ; let the uninstall step report locked files.
-  StrCpy $R2 `$$ErrorActionPreference='Stop'; try { $$self=[int]$$env:OSM_CLIENT_SELF; $$d=[IO.Path]::GetFullPath($$env:OSM_CLIENT_DIR).TrimEnd([char]92)+[char]92; $$f={ @(Get-WmiObject Win32_Process | Where-Object { $$_.ExecutablePath -and $$_.ProcessId -ne $$self -and $$_.ExecutablePath.StartsWith($$d,[StringComparison]::OrdinalIgnoreCase) }) }; $$p=& $$f; if ($$env:OSM_CLIENT_ACTION -eq 'stop' -and $$p.Count) { $$p | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep -Milliseconds 800; $$p=& $$f }; [Console]::Out.Write($$p.Count) } catch { [Console]::Out.Write('?'+$$_.Exception.Message) }`
-  System::Call 'kernel32::GetCurrentProcessId() i .R0'
-  System::Call 'kernel32::SetEnvironmentVariable(t "OSM_CLIENT_SELF", t "$R0")'
-  System::Call 'kernel32::SetEnvironmentVariable(t "OSM_CLIENT_DIR", t "$R9")'
-  System::Call 'kernel32::SetEnvironmentVariable(t "OSM_CLIENT_ACTION", t "count")'
-  nsExec::ExecToStack /TIMEOUT=60000 `"${POWERSHELL}" -NoProfile -NonInteractive -Command "$R2"`
-  Pop $R3
-  Pop $R4
-  Push "${PREFIX}CloseClient dir=$R9 self=$R0 found=$R4 exit=$R3"
+  StrCpy $ProcDir $R9
+  StrCpy $ProcMode 0
+  Call ${PREFIX}FolderProcesses
+  Push "${PREFIX}CloseClient dir=$R9 found=$ProcCount"
   Call ${PREFIX}SetupLog
-  IntOp $R0 $R4 + 0
-  ${If} $R0 > 0
+  ${If} $ProcCount > 0
    ${If} ${Cmd} `MessageBox MB_OKCANCEL|MB_ICONEXCLAMATION "OSMClient is running from $R9.$\r$\n$\r$\nIt will be closed, together with any remote sessions it opened. Click OK to continue." /SD IDOK IDOK`
-    System::Call 'kernel32::SetEnvironmentVariable(t "OSM_CLIENT_ACTION", t "stop")'
-    nsExec::ExecToStack /TIMEOUT=60000 `"${POWERSHELL}" -NoProfile -NonInteractive -Command "$R2"`
-    Pop $R3
-    Pop $R4
-    Push "${PREFIX}CloseClient stopped dir=$R9 remaining=$R4 exit=$R3"
+    StrCpy $ProcMode 1
+    Call ${PREFIX}FolderProcesses
+    Sleep 500
+    StrCpy $ProcMode 0
+    Call ${PREFIX}FolderProcesses
+    Push "${PREFIX}CloseClient stopped dir=$R9 remaining=$ProcCount"
     Call ${PREFIX}SetupLog
-    IntOp $R0 $R4 + 0
-    ${If} $R0 > 0
+    ${If} $ProcCount > 0
      MessageBox MB_ICONSTOP "OSMClient could not be closed. Quit it from the tray icon and try again." /SD IDOK
      StrCpy $R1 0
     ${EndIf}
@@ -113,11 +180,7 @@ Function ${PREFIX}CloseClient
   Call ${PREFIX}SetupLog
  ${EndIf}
  StrCpy $R9 $R1
- Pop $R4
- Pop $R3
- Pop $R2
  Pop $R1
- Pop $R0
  Exch $R9
 FunctionEnd
 !macroend
