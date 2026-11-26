@@ -44,7 +44,9 @@ UninstPage instfiles
 
 ; Close every process started from the directory on the stack (the client, its
 ; Go helper and PuTTY), so the old files can be removed. Processes are matched by
-; full path inside that directory, never by image name alone. Interactive runs ask
+; full path inside that directory, never by image name alone. The calling process
+; is excluded: an uninstaller started with _?= runs in place from that directory.
+; Interactive runs ask
 ; first; silent runs close without asking. Pushes 1 to continue, 0 to stop.
 !macro DefineCloseClient PREFIX
 Function ${PREFIX}CloseClient
@@ -60,7 +62,9 @@ Function ${PREFIX}CloseClient
   ; into the PowerShell command line. WMI reports 64-bit process paths to this
   ; 32-bit installer as well. "?" means the query failed: continue as before and
   ; let the uninstall step report locked files.
-  StrCpy $R2 `$$ErrorActionPreference='Stop'; try { $$d=[IO.Path]::GetFullPath($$env:OSM_CLIENT_DIR).TrimEnd([char]92)+[char]92; $$f={ @(Get-WmiObject Win32_Process | Where-Object { $$_.ExecutablePath -and $$_.ExecutablePath.StartsWith($$d,[StringComparison]::OrdinalIgnoreCase) }) }; $$p=& $$f; if ($$env:OSM_CLIENT_ACTION -eq 'stop' -and $$p.Count) { $$p | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep -Milliseconds 800; $$p=& $$f }; [Console]::Out.Write($$p.Count) } catch { [Console]::Out.Write('?') }`
+  StrCpy $R2 `$$ErrorActionPreference='Stop'; try { $$self=[int]$$env:OSM_CLIENT_SELF; $$d=[IO.Path]::GetFullPath($$env:OSM_CLIENT_DIR).TrimEnd([char]92)+[char]92; $$f={ @(Get-WmiObject Win32_Process | Where-Object { $$_.ExecutablePath -and $$_.ProcessId -ne $$self -and $$_.ExecutablePath.StartsWith($$d,[StringComparison]::OrdinalIgnoreCase) }) }; $$p=& $$f; if ($$env:OSM_CLIENT_ACTION -eq 'stop' -and $$p.Count) { $$p | ForEach-Object { Stop-Process -Id $$_.ProcessId -Force -ErrorAction SilentlyContinue }; Start-Sleep -Milliseconds 800; $$p=& $$f }; [Console]::Out.Write($$p.Count) } catch { [Console]::Out.Write('?') }`
+  System::Call 'kernel32::GetCurrentProcessId() i .R0'
+  System::Call 'kernel32::SetEnvironmentVariable(t "OSM_CLIENT_SELF", t "$R0")'
   System::Call 'kernel32::SetEnvironmentVariable(t "OSM_CLIENT_DIR", t "$R9")'
   System::Call 'kernel32::SetEnvironmentVariable(t "OSM_CLIENT_ACTION", t "count")'
   nsExec::ExecToStack /TIMEOUT=60000 `"${POWERSHELL}" -NoProfile -NonInteractive -Command "$R2"`

@@ -61,6 +61,30 @@ function Get-ClientProcesses {
     })
 }
 
+function Show-MsiLog([string]$Log) {
+    if (-not (Test-Path -LiteralPath $Log)) { Write-Host "MSI log not found: $Log"; return }
+    $lines = @(Get-Content -LiteralPath $Log)
+    Write-Host "==== MSI log excerpt: $([System.IO.Path]::GetFileName($Log)) ($($lines.Count) lines)"
+    $failure = @(0..($lines.Count - 1) | Where-Object { $lines[$_] -match 'Return value 3' })
+    foreach ($index in $failure | Select-Object -First 2) {
+        $start = [Math]::Max(0, $index - 40)
+        $lines[$start..$index] | ForEach-Object { Write-Host $_ }
+        Write-Host '----'
+    }
+    $lines | Where-Object { $_ -match 'RemoveNsisInstall|NSISINSTALL|Error 17|CustomAction .* returned|Product: OSMClient' } |
+        Select-Object -First 40 | ForEach-Object { Write-Host $_ }
+    Write-Host '==== end of MSI log excerpt'
+}
+
+function Invoke-Msi([string]$Arguments, [string]$Log) {
+    try {
+        Invoke-CheckedProcess 'msiexec.exe' "$Arguments /L*v `"$Log`"" @(0, 3010)
+    } catch {
+        Show-MsiLog $Log
+        throw
+    }
+}
+
 function Start-Client {
     $process = Start-Process -FilePath (Join-Path $InstallDir 'client.exe') -PassThru
     Start-Sleep -Seconds 3
@@ -157,7 +181,7 @@ try {
     Verify-Payload
     $client = Start-Client
     $log = Join-Path $destination 'verify-replace-exe-with-msi.log'
-    Invoke-CheckedProcess 'msiexec.exe' "/i `"$msiPackage`" /qn /norestart /L*v `"$log`"" @(0, 3010)
+    Invoke-Msi "/i `"$msiPackage`" /qn /norestart" $log
     Assert-ClientClosed $client 'MSI replacing the EXE installation'
     if (Test-RegistryValue $NsisKey 'InstallLocation') { throw 'MSI install did not remove the EXE installation.' }
     if (-not (Test-RegistryValue $MsiKey 'WindowsInstaller')) { throw 'MSI install marker is missing after replacing the EXE installation.' }
